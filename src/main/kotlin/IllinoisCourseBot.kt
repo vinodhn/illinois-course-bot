@@ -5,95 +5,135 @@ import com.github.kotlintelegrambot.entities.ChatId
 import okhttp3.*
 import java.io.IOException
 
-data class XmlTag(val id: String,
-                  val href: String,
-                  val value: String)
+// Base API URL
+const val baseApiUrl = "https://courses.illinois.edu/cisapp/explorer/schedule/2021/fall/SUBJ/NUM.xml"
 
-data class Course(val courseId: String,
-                  val parents: List<XmlTag>,
-                  val label: String,
-                  val desc: String,
-                  val numHours: String,
-                  val sections:List<XmlTag>)
+// Base Course Explorer URL
+const val baseCEUrl = "https://courses.illinois.edu/schedule/2021/fall/SUBJ/NUM"
 
-val baseUrl = "https://courses.illinois.edu/cisapp/explorer/schedule/2021/fall/SUBJ/NUM.xml"
+// Help message
+const val helpMsg:String = "Get info with the /course command. \n" +
+                           "Do /course <subject> <number> \n" +
+                           "Ex: /course CS233 or /course LAS 101 \n" +
+                           "Space between subject and number not needed.\n" +
+                           "Other commands: /start & /help for this message."
 
 private val client = OkHttpClient()
 
 fun main() {
 
     val bot = bot {
+        // Token from BotFather, this is removed in the GitHub commits
         token = "$token"
+        // Handle events from Telegram's polling
         dispatch {
+            // Command: /course <args>
             command("course") {
                 val parsedArgs = parseArgs(args)
                 val response = getClassInfo(parsedArgs)
                 bot.sendMessage(ChatId.fromId(message.chat.id), text = response)
             }
-
-            command("start") {
-                val response = help()
+            // Command: /c | Shorthand for /course
+            command("c") {
+                val parsedArgs = parseArgs(args)
+                val response = getClassInfo(parsedArgs)
                 bot.sendMessage(ChatId.fromId(message.chat.id), text = response)
             }
-
+            // Command: /start
+            command("start") {
+                bot.sendMessage(ChatId.fromId(message.chat.id), text = helpMsg)
+            }
+            // Command: /help
             command("help") {
-                val response = help()
-                bot.sendMessage(ChatId.fromId(message.chat.id), text = response)
+                bot.sendMessage(ChatId.fromId(message.chat.id), text = helpMsg)
+            }
+            // Command: /? | Shorthand for /help
+            command("?") {
+                bot.sendMessage(ChatId.fromId(message.chat.id), text = helpMsg)
             }
         }
     }
+    // Poll messages from Telegram
+    // TODO: Convert to webhook based polling
     bot.startPolling()
 }
 
-fun parseArgs(args: List<String>): List<String> {
-    val parsedArgs: MutableList<String> = mutableListOf<String>().toMutableList()
+fun parseArgs(args:List<String>):List<String> {
+    // Create mutable list of arguments
+    var parsedArgs:MutableList<String> = mutableListOf()
 
+    // TODO: Sanitize inputs to ensure that only letters go in SUBJ and only numbers in NUM
+
+    // If the args list implies the input is formatted as: SUBJ NUM (e.g. CS 233), then just proceed
     if(args.size == 2){
-        parsedArgs += args[0]
-        parsedArgs += args[1]
-    } else if(args.size == 1) {
-        val arg = args[0]
-        val courseNumber = arg.substring(arg.length - 3)
-        val courseSubject = arg.substring(0, arg.length - 3)
+        parsedArgs = args.toMutableList()
+    }
+    // Else if the args list implies the input is formatted as: SUBJNUM (e.g. CS233), then break it up
+    else if(args.size == 1) {
+        // Since course numbers are always 3 digits, we can get all other characters as the subject
+        val courseSubject = args[0].substring(0, args[0].length - 3)
+        // And then get the final 3 characters as the course number
+        val courseNumber = args[0].substring(args[0].length - 3)
 
-        parsedArgs += courseSubject
-        parsedArgs += courseNumber
+        // And then add it to our parsed arguments list in the correct order
+        parsedArgs.add(0, courseSubject)
+        parsedArgs.add(1, courseNumber)
     }
 
     return parsedArgs
 }
 
-fun getClassInfo(args: List<String>): String {
-    if(!args.isEmpty()) {
-        val finalUrl = baseUrl.replace("SUBJ", args[0].toUpperCase()).replace("NUM", args[1])
-        var xml: String? = ""
-        println(finalUrl)
-//    val response: String = "CS 233: Computer Architecture\n\n" +
-//                            "Fundamentals of computer architecture: digital logic design, working up from the logic gate level to understand the function of a simple computer; machine-level programming to understand implementation of high-level languages; performance models of modern computer architectures to enable performance optimization of software; hardware primitives for parallelism and security. Prerequisite: CS 125 or CS 128 and CS 173; credit or concurrent enrollment in CS 225.\n" +
-//                            "\n" +
-//                            "Credit Hours: 4 hours.\n" +
-//                            "\n" +
-//                            "Average GPA: 3.2"
+fun getClassInfo(args:List<String>):String {
+    lateinit var finalResponse:String
+    // If the inputs are parsed
+    if(args.isNotEmpty()) {
+        // Construct the final url based on the UIUC API
+        val finalUrl = baseApiUrl.replace("SUBJ", args[0].toUpperCase()).replace("NUM", args[1])
+        // Create a lateinit String for the XML response
+        lateinit var xml:String
+
+        // Using OkHttp, create an HTTP Request
         val request = Request.Builder()
             .url(finalUrl)
             .build()
 
+        // Try to get a response from the UIUC API
         client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("Unexpected code $response")
-
-            xml = response.body()?.string()
-            print(xml)
+            if (!response.isSuccessful) {
+                finalResponse = "Cannot get information for: $args"
+            }
+            // If there is a successful response, it will be XMl
+            xml = response.body()?.string().toString()
         }
+
+        // Then just extract what we care about
+        val courseCode:String = args[0].toUpperCase() + " " + args[1] + ""
+
+        // TODO: Maybe make .substringAfter().substringBefore() a separate method?
+        val courseLabel:String = xml.substringAfter("<label>").substringBefore("</label>") + "."
+
+        val courseDesc:String = xml.substringAfter("<description>").substringBefore("</description>")
+
+        val courseCreditHrs:String = xml.substringAfter("<creditHours>").substringBefore("</creditHours")
+
+        // Simple hacky way to count the number of occurrences of a specific String/CharSequence.
+        // TODO: Maybe place </section> in its own var?
+        val courseSectionCount:Int = xml.windowed("</section>".length){ if (it == "</section>") 1 else 0}.sum()
+
+        val courseLink:String = baseCEUrl.replace("SUBJ", args[0].toUpperCase()).replace("NUM", args[1])
+
+        // Since we might get a response still even if a class is not offered, handle it separately
+        finalResponse = if(courseSectionCount == 0) {
+            "Cannot get information for $courseCode for Fall 2021\n" +
+            "This course is probably not offered this semester."
+        }else {
+            "$courseCode: $courseLabel\n\n$courseDesc\n\n" +
+            "Number of credit hours: $courseCreditHrs\n\n" +
+            "Number of sections: $courseSectionCount\n\n" +
+            "View in Course Explorer: $courseLink"
+        }
+    } else {
+        finalResponse = "Please try with proper inputs. \n$helpMsg"
     }
-    return ""
+    return finalResponse
 }
-
-fun help(): String {
-    val response = "Get info with the /course command. \n" +
-                  "Do /course subject number \n" +
-                  "Ex: /course CS233 or /course LAS 101 \n" +
-                  "Space between subject and number not needed."
-
-    return response
-}
-
